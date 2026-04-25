@@ -1,0 +1,46 @@
+# Example: wrap an ML training run with DING.
+#
+# End-of-run rules are particularly useful for training: emit a metric per
+# epoch, alert at the end of the run if the model regressed.
+
+name: train
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 2 * * *'   # nightly
+
+jobs:
+  train:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - run: pip install -r requirements.txt
+
+      - name: Train under DING
+        uses: zuchka/ding-action@v1
+        with:
+          rules: ./train-alerts.yaml
+          command: python train.py --epochs 50
+
+# Example train-alerts.yaml:
+#
+# rules:
+#   # Real-time: alert if any single epoch's loss spiked.
+#   - name: loss_spike
+#     match: { metric: epoch.loss }
+#     condition: value > 5.0
+#     message: "epoch {{ .epoch }} loss spiked: {{ .value }}"
+#     alert: [{ notifier: github_actions }]
+#
+#   # End-of-run: did final eval loss meet the bar?
+#   - name: eval_bar
+#     match: { metric: eval.loss }
+#     mode: end-of-run
+#     condition: min(value) over 24h > 0.5
+#     message: "best eval loss was {{ .min }} (worse than 0.5 threshold)"
+#     alert: [{ notifier: github_actions }]

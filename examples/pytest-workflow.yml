@@ -1,0 +1,39 @@
+# Example: wrap a pytest run with DING.
+#
+# Drop this in .github/workflows/ alongside an alerts.yaml that defines your
+# rules. Tests need to emit JSON events to stdout — see the action README
+# for an example of instrumenting a test to do this.
+
+name: ci
+on: [pull_request, push]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - run: pip install pytest
+
+      - name: Run tests under DING
+        uses: zuchka/ding-action@v1
+        with:
+          rules: ./alerts.yaml
+          command: pytest tests/
+
+  # Same pattern for an arbitrary instrumented build step:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build under DING
+        uses: zuchka/ding-action@v1
+        with:
+          rules: ./build-alerts.yaml
+          command: |
+            ./scripts/build.sh && ./scripts/emit-build-metrics.sh

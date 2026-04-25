@@ -1,0 +1,164 @@
+name: 'DING — alerting that ships with the workload'
+description: 'Wrap a command with DING. Alert in real-time as it runs, and at end-of-run with aggregate summaries. Auto-detects GitHub Actions context.'
+author: 'zuchka'
+branding:
+  icon: 'bell'
+  color: 'orange'
+
+inputs:
+  command:
+    description: 'The command to wrap. DING evaluates rules against the JSON/Prometheus events the command emits to stdout, and against the synthetic run.exit event when the command exits.'
+    required: true
+  rules:
+    description: 'Path to the DING rules file (relative to the workspace).'
+    required: false
+    default: 'ding.yaml'
+  version:
+    description: 'DING version to install (e.g., v0.5.0). Use "latest" (default) to install the most recent release.'
+    required: false
+    default: 'latest'
+  run-id:
+    description: 'Override the auto-detected run ID. By default DING uses GITHUB_RUN_ID.'
+    required: false
+    default: ''
+  fail-on-alert:
+    description: 'Set to "true" to fail the step if any alert fired during the run, even if the wrapped command exited 0. Default: false (only the wrapped command''s exit code matters).'
+    required: false
+    default: 'false'
+
+outputs:
+  exit-code:
+    description: 'The exit code of the wrapped command.'
+    value: ${{ steps.run.outputs.exit_code }}
+  alerts-fired:
+    description: 'Number of alerts DING fired during the run (parsed from the alert log).'
+    value: ${{ steps.run.outputs.alerts_fired }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install DING
+      id: install
+      shell: bash
+      env:
+        DING_VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+
+        # Detect OS
+        OS="$(uname -s)"
+        case "$OS" in
+          Linux)  OS="linux" ;;
+          Darwin) OS="darwin" ;;
+          *)
+            echo "::error::Unsupported OS: $OS (DING action supports Linux and macOS)"
+            exit 1
+            ;;
+        esac
+
+        # Detect architecture
+        ARCH="$(uname -m)"
+        case "$ARCH" in
+          x86_64)        ARCH="amd64" ;;
+          aarch64|arm64) ARCH="arm64" ;;
+          *)
+            echo "::error::Unsupported arch: $ARCH"
+            exit 1
+            ;;
+        esac
+
+        # Resolve version
+        if [ "$DING_VERSION" = "latest" ] || [ -z "$DING_VERSION" ]; then
+          DING_VERSION="$(curl -sfL https://api.github.com/repos/zuchka/ding/releases/latest \
+            | grep '"tag_name"' | head -1 \
+            | sed 's/.*"tag_name": *"\(.*\)".*/\1/')"
+          if [ -z "$DING_VERSION" ]; then
+            echo "::error::Could not resolve latest DING version from GitHub API"
+            exit 1
+          fi
+        fi
+
+        FILENAME="ding_${OS}_${ARCH}.tar.gz"
+        URL="https://github.com/zuchka/ding/releases/download/${DING_VERSION}/${FILENAME}"
+        CHECKSUM_URL="https://github.com/zuchka/ding/releases/download/${DING_VERSION}/checksums.txt"
+
+        # Install to a runner-temp location and add to PATH so we don't need sudo.
+        DING_BIN_DIR="${RUNNER_TEMP}/ding-bin"
+        mkdir -p "$DING_BIN_DIR"
+        cd "$DING_BIN_DIR"
+
+        echo "Downloading ding ${DING_VERSION} for ${OS}/${ARCH}..."
+        curl -sfL "$URL" -o "$FILENAME"
+        curl -sfL "$CHECKSUM_URL" -o checksums.txt
+
+        # Verify checksum
+        grep "$FILENAME" checksums.txt > check.txt
+        if command -v sha256sum >/dev/null 2>&1; then
+          sha256sum -c check.txt
+        else
+          shasum -a 256 -c check.txt
+        fi
+
+        tar -xzf "$FILENAME"
+        chmod +x ding
+
+        echo "$DING_BIN_DIR" >> "$GITHUB_PATH"
+        echo "ding ${DING_VERSION} installed to ${DING_BIN_DIR}/ding"
+
+    - name: Run command under DING
+      id: run
+      shell: bash
+      env:
+        DING_RULES: ${{ inputs.rules }}
+        DING_COMMAND: ${{ inputs.command }}
+        DING_RUN_ID_OVERRIDE: ${{ inputs.run-id }}
+        DING_FAIL_ON_ALERT: ${{ inputs.fail-on-alert }}
+      run: |
+        set -uo pipefail
+
+        if [ ! -f "$DING_RULES" ]; then
+          echo "::error::Rules file not found: $DING_RULES"
+          exit 1
+        fi
+
+        # Always log fired alerts so we can count them and surface in step summary.
+        ALERT_LOG="${RUNNER_TEMP}/ding-alerts.jsonl"
+        : > "$ALERT_LOG"
+
+        # Inject alert_log into the rules file via a temporary overlay so we don't
+        # mutate the user's file. Append after rules: if alert_log: not already set.
+        OVERLAY="${RUNNER_TEMP}/ding-rules-overlay.yaml"
+        cp "$DING_RULES" "$OVERLAY"
+        if ! grep -q '^alert_log:' "$OVERLAY"; then
+          {
+            echo ""
+            echo "alert_log:"
+            echo "  path: $ALERT_LOG"
+          } >> "$OVERLAY"
+        fi
+
+        RUNID_FLAG=""
+        if [ -n "$DING_RUN_ID_OVERRIDE" ]; then
+          RUNID_FLAG="--run-id $DING_RUN_ID_OVERRIDE"
+        fi
+
+        set +e
+        ding run --config "$OVERLAY" $RUNID_FLAG -- bash -c "$DING_COMMAND"
+        EXIT_CODE=$?
+        set -e
+
+        # Count alerts from the log file.
+        ALERTS_FIRED=0
+        if [ -f "$ALERT_LOG" ]; then
+          ALERTS_FIRED=$(wc -l < "$ALERT_LOG" | tr -d ' ')
+        fi
+
+        echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
+        echo "alerts_fired=$ALERTS_FIRED" >> "$GITHUB_OUTPUT"
+
+        if [ "$DING_FAIL_ON_ALERT" = "true" ] && [ "$ALERTS_FIRED" -gt 0 ] && [ "$EXIT_CODE" -eq 0 ]; then
+          echo "::error::DING fired $ALERTS_FIRED alert(s) and fail-on-alert is enabled."
+          exit 1
+        fi
+
+        exit "$EXIT_CODE"
