@@ -1,5 +1,5 @@
 name: 'DING — alerting that ships with the workload'
-description: 'Wrap a command with DING. Alert in real-time as it runs, and at end-of-run with aggregate summaries. Auto-detects GitHub Actions context.'
+description: 'Alert in real-time as GH Actions runs, and at end-of-run with aggregate summaries. Auto-detects GH Actions context.'
 author: 'zuchka'
 branding:
   icon: 'bell'
@@ -7,7 +7,7 @@ branding:
 
 inputs:
   command:
-    description: 'DING evaluates rules against events on stdout, and against the synthetic run.exit events on exit.'
+    description: 'DING evaluates rules against events on stdout and against synthetic run.exit events on exit.'
     required: true
   rules:
     description: 'Path to the DING rules file (relative to the workspace).'
