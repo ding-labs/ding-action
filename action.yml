@@ -7,7 +7,7 @@ branding:
 
 inputs:
   command:
-    description: 'The command to wrap. DING evaluates rules against the JSON/Prometheus events the command emits to stdout, and against the synthetic run.exit event when the command exits.'
+    description: 'DING evaluates rules against events on stdout, and against the synthetic run.exit events on exit.'
     required: true
   rules:
     description: 'Path to the DING rules file (relative to the workspace).'
